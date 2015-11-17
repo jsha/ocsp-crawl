@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agl/certificatetransparency"
+	"github.com/jsha/certificatetransparency"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -45,7 +45,10 @@ func main() {
 	statuses[ocsp.Unknown] = "unknown"
 	statuses[ocsp.ServerFailed] = "fail"
 
-	ctLog, err := certificatetransparency.NewLog(*logURL, *logKey)
+	pemPublicKey := fmt.Sprintf(`-----BEGIN PUBLIC KEY-----
+%s
+-----END PUBLIC KEY-----`, *logKey)
+	ctLog, err := certificatetransparency.NewLog(*logURL, pemPublicKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize log: %s\n", err)
 		os.Exit(1)
@@ -62,7 +65,7 @@ func main() {
 
 	sth, err := ctLog.GetSignedTreeHead()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
+		fmt.Fprintf(os.Stderr, "GetSignedTreeHead: %s\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("%d total entries at %s\n", sth.Size, sth.Time.Format(time.ANSIC))
@@ -123,6 +126,7 @@ func main() {
 			url := fmt.Sprintf("%s%s", ocspServer, base64.StdEncoding.EncodeToString(req))
 			start := time.Now()
 			httpResponse, err := http.Post(ocspServer, "application/ocsp-request", bytes.NewBuffer(req))
+			defer httpResponse.Body.Close()
 			datum := data{
 				ocspLatency: time.Now().Sub(start),
 				notBefore:   cert.NotBefore,
