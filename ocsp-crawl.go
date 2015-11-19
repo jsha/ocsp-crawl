@@ -26,6 +26,7 @@ var logKey = flag.String("key", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECyPLhWKYYUg
 var fileName = flag.String("file", "certly.log", "file in which to cache log data.")
 
 type data struct {
+	serial      string
 	notBefore   time.Time
 	nextUpdate  time.Time
 	ocspLatency time.Duration
@@ -132,6 +133,7 @@ func main() {
 			}
 			defer httpResponse.Body.Close()
 			datum := data{
+				serial:      fmt.Sprintf("%x", cert.SerialNumber),
 				ocspLatency: time.Now().Sub(start),
 				notBefore:   cert.NotBefore,
 			}
@@ -176,6 +178,7 @@ func processData(in <-chan data) {
 	var latestIssue time.Time
 	var totalLatency time.Duration
 	latencies := make(int64slice, 10000)
+	distinct := make(map[string]bool)
 	for datum := range in {
 		if datum.notBefore.After(latestIssue) {
 			latestIssue = datum.notBefore
@@ -185,6 +188,7 @@ func processData(in <-chan data) {
 		}
 		latencies = append(latencies, int64(datum.ocspLatency))
 		totalLatency += datum.ocspLatency
+		distinct[datum.serial] = true
 	}
 	sort.Sort(latencies)
 	timeSinceLatest := begin.Sub(latestIssue)
@@ -192,7 +196,7 @@ func processData(in <-chan data) {
 	mean := time.Duration(totalLatency / time.Duration(len(latencies)))
 	ninetieth := time.Duration(latencies[int(len(latencies)*9/10)])
 	max := time.Duration(latencies[len(latencies)-1])
-	fmt.Printf("Count: %d\n", len(latencies))
+	fmt.Printf("Count: %d %d\n", len(latencies), len(distinct))
 	fmt.Printf("Latest issue: %v\n", timeSinceLatest)
 	fmt.Printf("Latencies: %dms median, %dms mean, %dms 90th, %dms max\n",
 		median/time.Millisecond, mean/time.Millisecond, ninetieth/time.Millisecond,
