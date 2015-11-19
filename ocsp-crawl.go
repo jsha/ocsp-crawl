@@ -126,6 +126,10 @@ func main() {
 			url := fmt.Sprintf("%s%s", ocspServer, base64.StdEncoding.EncodeToString(req))
 			start := time.Now()
 			httpResponse, err := http.Post(ocspServer, "application/ocsp-request", bytes.NewBuffer(req))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error fetching OCSP: %s %s\n", err, url)
+				return
+			}
 			defer httpResponse.Body.Close()
 			datum := data{
 				ocspLatency: time.Now().Sub(start),
