@@ -24,6 +24,7 @@ import (
 var logURL = flag.String("url", "https://log.certly.io", "url of CT log")
 var logKey = flag.String("key", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECyPLhWKYYUgEc+tUXfPQB4wtGS2MNvXrjwFCCnyYJifBtd2Sk7Cu+Js9DNhMTh35FftHaHu6ZrclnNBKwmbbSA==", "base64-encoded CT log key")
 var fileName = flag.String("file", "certly.log", "file in which to cache log data.")
+var v = flag.Bool("v", false, "verbose")
 
 type data struct {
 	serial      string
@@ -31,6 +32,7 @@ type data struct {
 	nextUpdate  time.Time
 	ocspLatency time.Duration
 	ocspErr     error
+	names       []string
 }
 
 var statuses map[int]string = make(map[int]string, 4)
@@ -134,6 +136,7 @@ func main() {
 			defer httpResponse.Body.Close()
 			datum := data{
 				serial:      fmt.Sprintf("%x", cert.SerialNumber),
+				names:       cert.DNSNames,
 				ocspLatency: time.Now().Sub(start),
 				notBefore:   cert.NotBefore,
 			}
@@ -160,7 +163,6 @@ func main() {
 			}
 			datum.nextUpdate = parsedResponse.NextUpdate
 			dataChan <- datum
-			//fmt.Printf("%8s %x %s\n", statuses[parsedResponse.Status], parsedResponse.SerialNumber, names)
 		})
 		close(dataChan)
 	}()
@@ -180,6 +182,9 @@ func processData(in <-chan data) {
 	latencies := make(int64slice, 10000)
 	distinct := make(map[string]bool)
 	for datum := range in {
+		if *v {
+			fmt.Printf("%x %s\n", datum.serial, strings.Join(datum.names, ", "))
+		}
 		if datum.notBefore.After(latestIssue) {
 			latestIssue = datum.notBefore
 		}
