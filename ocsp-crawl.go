@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -25,14 +26,17 @@ var logURL = flag.String("url", "https://log.certly.io", "url of CT log")
 var logKey = flag.String("key", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECyPLhWKYYUgEc+tUXfPQB4wtGS2MNvXrjwFCCnyYJifBtd2Sk7Cu+Js9DNhMTh35FftHaHu6ZrclnNBKwmbbSA==", "base64-encoded CT log key")
 var fileName = flag.String("file", "certly.log", "file in which to cache log data.")
 var v = flag.Bool("v", false, "verbose")
+var skipUpdate = flag.Bool("skip-update", false, "skip update")
 
 type data struct {
 	serial      string
 	notBefore   time.Time
 	nextUpdate  time.Time
+	thisUpdate  time.Time
 	ocspLatency time.Duration
 	ocspErr     error
 	names       []string
+	url         string
 }
 
 var statuses map[int]string = make(map[int]string, 4)
@@ -66,26 +70,39 @@ func main() {
 
 	entriesFile := certificatetransparency.EntriesFile{file}
 
-	sth, err := ctLog.GetSignedTreeHead()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GetSignedTreeHead: %s\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("%d total entries at %s\n", sth.Size, sth.Time.Format(time.ANSIC))
-
-	count, err := entriesFile.Count()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nFailed to read entries file: %s\n", err)
-		os.Exit(1)
-	}
-	if count < sth.Size {
-		_, err = ctLog.DownloadRange(file, nil, count, sth.Size)
+	if !*skipUpdate {
+		sth, err := ctLog.GetSignedTreeHead()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "\nFailed to update CT log: %s\n", err)
+			fmt.Fprintf(os.Stderr, "GetSignedTreeHead: %s\n", err)
 			os.Exit(1)
 		}
+		fmt.Printf("%d total entries at %s\n", sth.Size, sth.Time.Format(time.ANSIC))
+
+		count, err := entriesFile.Count()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nFailed to read entries file: %s\n", err)
+			os.Exit(1)
+		}
+		if count < sth.Size {
+			_, err = ctLog.DownloadRange(file, nil, count, sth.Size)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\nFailed to update CT log: %s\n", err)
+				os.Exit(1)
+			}
+		}
+		entriesFile.Seek(0, 0)
+		treeHash, err := entriesFile.HashTree(nil, sth.Size)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error hashing tree: %s", err)
+			os.Exit(1)
+		}
+		if !bytes.Equal(treeHash[:], sth.Hash) {
+			fmt.Fprintf(os.Stderr, "Hashes do not match! Calculated: %x, STH contains %x\n", treeHash, sth.Hash)
+			os.Exit(1)
+		}
+		fmt.Println("Hashes match! Calculated: %s, STH contains %s\n", hex.EncodeToString(treeHash[:]), hex.EncodeToString(sth.Hash[:]))
+		entriesFile.Seek(0, 0)
 	}
-	entriesFile.Seek(0, 0)
 
 	dataChan := make(chan data)
 
@@ -135,10 +152,11 @@ func main() {
 			}
 			defer httpResponse.Body.Close()
 			datum := data{
-				serial:      fmt.Sprintf("%x", cert.SerialNumber),
+				serial:      fmt.Sprintf("%032x", cert.SerialNumber),
 				names:       cert.DNSNames,
 				ocspLatency: time.Now().Sub(start),
 				notBefore:   cert.NotBefore,
+				url:         url,
 			}
 			if datum.ocspLatency > time.Second {
 				fmt.Printf("slow response (%dms) for %x: %s\n", datum.ocspLatency/time.Millisecond, cert.SerialNumber, url)
@@ -162,6 +180,7 @@ func main() {
 				return
 			}
 			datum.nextUpdate = parsedResponse.NextUpdate
+			datum.thisUpdate = parsedResponse.ThisUpdate
 			dataChan <- datum
 		})
 		close(dataChan)
@@ -183,13 +202,19 @@ func processData(in <-chan data) {
 	distinct := make(map[string]bool)
 	for datum := range in {
 		if *v {
-			fmt.Printf("%x %s\n", datum.serial, strings.Join(datum.names, ", "))
+			fmt.Printf("%s %s %s\n", datum.notBefore, datum.serial, strings.Join(datum.names, ", "))
 		}
 		if datum.notBefore.After(latestIssue) {
 			latestIssue = datum.notBefore
 		}
 		if datum.ocspErr != nil {
 			fmt.Fprintf(os.Stderr, "%s", datum.ocspErr)
+		}
+		if begin.After(datum.nextUpdate) {
+			fmt.Fprintf(os.Stderr, "Badly out of date response for %s: %s\n", datum.serial, datum.thisUpdate)
+		}
+		if begin.Sub(datum.thisUpdate) > time.Hour*24*4 {
+			fmt.Fprintf(os.Stderr, "Out of date response for %s: %s %s\n", datum.serial, datum.thisUpdate, datum.url)
 		}
 		latencies = append(latencies, int64(datum.ocspLatency))
 		totalLatency += datum.ocspLatency
